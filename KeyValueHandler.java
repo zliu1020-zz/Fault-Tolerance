@@ -104,9 +104,10 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	            log.info("Start updating data in backup node" + backupHost + ":" + backupPort + " because primary node has new changes.");
 	            backupClient.syncWithPrimary(key, value);
 	            log.info("Finished updating data in backup node" + backupHost + ":" + backupPort);
-	           // tTransport.close();
+	           tTransport.close();
 			}
 		}catch(Exception e) {
+			log.error("PUT METHOD ERROR");
 			e.printStackTrace();
 		}finally {
 			this.readWriteLock.writeLock().unlock();
@@ -126,6 +127,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 			this.myMap.put(key, value);
 			//log.info("Backup map content: " + this.getMyMap().toString());
 		}catch(Exception e) {
+			log.error("SYNC METHOD ERROR");
 			e.printStackTrace();
 		}finally {
 			this.readWriteLock.writeLock().unlock();
@@ -216,7 +218,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	            log.info("Start replicating data from primary node to backup node" + this.host + ":" + this.port);
 	            this.replicateData(primaryClient.getMyMap());
 	            log.info("Finished replicating data from primary node to backup node" + this.host + ":" + this.port);
-	           // tTransport.close();
+	            tTransport.close();
 			}		
 		}catch(InterruptedException e) {
 			e.printStackTrace();
