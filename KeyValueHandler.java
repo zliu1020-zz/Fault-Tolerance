@@ -26,7 +26,8 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	private static Logger log;
 	private String primarySocket;
 	private List<String> backupSockets;
-	private ReentrantLock concurrencyLock = new ReentrantLock();
+//	private ReentrantLock concurrencyLock = new ReentrantLock();
+	private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
 
 	public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 		this.host = host;
@@ -49,26 +50,101 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public String get(String key) throws org.apache.thrift.TException {
-		String ret = myMap.get(key);
-		if (ret == null)
-			return "";
-		else
-			return ret;
+		if(!this.isPrimary()) {
+			log.error("Something is wrong - get method shouldnt be called by backup node");
+			throw new org.apache.thrift.TException("Something is wrong - get method shouldnt be called by backup node");
+		}
+		
+		try {
+			//acquire read lock, the thread will be blocked until the lock can be acquired
+			this.readWriteLock.readLock().lock();	
+			String ret = myMap.get(key);
+			if (ret == null)
+				return "";
+			else
+				return ret;
+		}catch(Exception e) {
+			log.error("Error reading from MyMap.");
+			e.printStackTrace();
+		}finally {
+			// release the read lock no matter what
+			this.readWriteLock.readLock().unlock();
+		}
+		
+		// if everything goes well the execution flow should never reach here 
+		throw new TException("get operation failed");	
 	}
 
 	public void put(String key, String value) throws org.apache.thrift.TException {
-		myMap.put(key, value);
+		if(!this.isPrimary()) {
+			log.error("Something is wrong - put method shouldnt be called by backup node");
+			throw new org.apache.thrift.TException("Something is wrong - put method shouldnt be called by backup node");
+		}
+		
+		try {
+			//acquire write lock, the thread will be blocked until the lock can be acquired
+			this.readWriteLock.writeLock().lock();
+			this.myMap.put(key, value);
+			//log.info("Primary map content: " + this.getMyMap().toString());
+			
+			//start to update MyMap for all backup nodes
+			for(String backupSocket: this.backupSockets) {
+				// establish RPC from primary to backup socket
+				String backupHost = backupSocket.split(":")[0];
+				int backupPort = Integer.parseInt(backupSocket.split(":")[1]);
+				TSocket tSocket = new TSocket(backupHost, backupPort);
+	            TTransport tTransport = new TFramedTransport(tSocket);
+	            tTransport.open();
+	            TProtocol tProtocol = new TBinaryProtocol(tTransport);
+	            
+	            // retrieve backup client
+	            KeyValueService.Client backupClient = new KeyValueService.Client(tProtocol);
+	            
+	            // start to synchronize the backup node with primary node
+	            log.info("Start updating data in backup node" + backupHost + ":" + backupPort + " because primary node has new changes.");
+	            backupClient.syncWithPrimary(key, value);
+	            log.info("Finished updating data in backup node" + backupHost + ":" + backupPort);
+	           // tTransport.close();
+			}
+		}catch(Exception e) {
+			e.printStackTrace();
+		}finally {
+			this.readWriteLock.writeLock().unlock();
+		}
 	}
 	
-	public void replicateData(Map<String, String> primaryData) {
+	public void syncWithPrimary(String key, String value) throws org.apache.thrift.TException {
+		if(this.isPrimary()) {
+			log.error("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
+			throw new org.apache.thrift.TException("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
+		}
+		
 		try {
-			concurrencyLock.lock();
+			//acquire write lock, the thread will be blocked until the lock can be acquired
+			log.info("Backup node is syncing with primary node");
+			this.readWriteLock.writeLock().lock();
+			this.myMap.put(key, value);
+			//log.info("Backup map content: " + this.getMyMap().toString());
+		}catch(Exception e) {
+			e.printStackTrace();
+		}finally {
+			this.readWriteLock.writeLock().unlock();
+		}
+	}
+	
+	public void replicateData(Map<String, String> primaryData) throws org.apache.thrift.TException{
+		if(this.isPrimary()) {
+			log.error("Something is wrong - replicateData method shouldnt be called by primary node");
+			throw new org.apache.thrift.TException("Something is wrong - replicateData method shouldnt be called by primary node");
+		}
+		try {
+			readWriteLock.writeLock().lock();
 			myMap.putAll(primaryData);
 		}catch(Exception e) {
 			log.error("Failed to replicate data from primary node to backup node:" + this.host + ":" + this.port);
 			e.printStackTrace();
 		}finally {
-			concurrencyLock.unlock();
+			readWriteLock.writeLock().unlock();
 		}
 	}
 	
@@ -137,6 +213,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	            KeyValueService.Client primaryClient = new KeyValueService.Client(tProtocol);
 	            
 	            // start to replicate data from primary socket to the current backup socket
+	            log.info("Start replicating data from primary node to backup node" + this.host + ":" + this.port);
 	            this.replicateData(primaryClient.getMyMap());
 	            log.info("Finished replicating data from primary node to backup node" + this.host + ":" + this.port);
 	           // tTransport.close();
