@@ -57,6 +57,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		
 		try {
 			//acquire read lock, the thread will be blocked until the lock can be acquired
+			log.info("GET method called");
 			this.readWriteLock.readLock().lock();	
 			String ret = myMap.get(key);
 			if (ret == null)
@@ -83,6 +84,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
+			log.info("PUT method called");
 			this.readWriteLock.writeLock().lock();
 			this.myMap.put(key, value);
 			//log.info("Primary map content: " + this.getMyMap().toString());
@@ -186,6 +188,10 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	@Override
 	synchronized public void process(WatchedEvent event) {
 		log.info("Zookeeper event caught: " + event.toString());
+		if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
+			this.backupSockets.clear();
+			log.info("NodeChildrenChanged event happens. Backup list resets.");
+		}
 		try {
 			// fetch all children
 			List<String> childNodes = fetchZookeeperChildNodes();
