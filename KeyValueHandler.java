@@ -49,7 +49,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	    try {
 	        this.curClient.getChildren().usingWatcher(this).forPath(this.zkNode);
 	    } catch (Exception e) {
-	        e.printStackTrace();
+	        log.error(e.getMessage());
 	    }
 	}
 
@@ -61,7 +61,6 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire read lock, the thread will be blocked until the lock can be acquired
-			log.info("GET method called");
             mutex.acquire();
 			String ret = myMap.get(key);
 			if (ret == null)
@@ -70,7 +69,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 				return ret;
 		}catch(Exception e) {
 			log.error("Error reading from MyMap.");
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}finally {
 			// release the read lock no matter what
             mutex.release();
@@ -88,8 +87,6 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
-			log.info("PUT method called");
-
             mutex.acquire();
 			this.myMap.put(key, value);
 
@@ -104,7 +101,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 			}
 		}catch(Exception e) {
 			log.error("PUT METHOD ERROR");
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}finally {
             mutex.release();
 		}
@@ -118,13 +115,11 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
-			log.info("Backup node is syncing with primary node");
-
             mutex.acquire();
 			this.myMap.put(key, value);
 		}catch(Exception e) {
 			log.error("SYNC METHOD ERROR");
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}finally {
             mutex.release();
 		}
@@ -140,7 +135,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 			myMap.putAll(primaryData);
 		}catch(Exception e) {
 			log.error("Failed to replicate data from primary node to backup node:" + this.host + ":" + this.port);
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}finally {
 			readWriteLock.writeLock().unlock();
 		}
@@ -248,12 +243,18 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
             // if the current node is primary node and there exists backup node, start to prepare backup clients
             if(this.isPrimary() && this.backupSockets.size() > 0){
                 this.clientPool = populateClientPool();
-                log.info("Done populating client pool: " + this.clientPool.toString());
+                log.info("Done populating client pool, size: " + this.clientPool.size());
+            }
+            
+            // if the current node is primary node and the backend node is down, purge the backup client queue
+             if(this.isPrimary() && this.backupSockets.size() == 0){
+                this.clientPool = new ConcurrentLinkedQueue<KeyValueService.Client>();
+                log.info("Done populating client pool, size: " + this.clientPool.size()); 
             }
 		}catch(InterruptedException e) {
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}catch(Exception e) {
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}
 	}
 }
