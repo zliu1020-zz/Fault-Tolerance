@@ -18,6 +18,7 @@ import org.apache.curator.framework.*;
 import org.apache.curator.framework.api.*;
 
 import com.google.common.util.concurrent.Striped;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	private Map<String, String> myMap;
@@ -26,9 +27,9 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	private String host;
 	private int port;
 	private static Logger log;
-    private boolean isPrimary;
+    //private boolean isPrimary;
 	private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
-    private ConcurrentLinkedQueue<KeyValueService.Client> clientPool = new ConcurrentLinkedQueue<KeyValueService.Client>();
+    private volatile ConcurrentLinkedQueue<KeyValueService.Client> clientPool = new ConcurrentLinkedQueue<KeyValueService.Client>();
     
     private Striped<Semaphore> striped = Striped.semaphore(64,1);
 
@@ -52,10 +53,10 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public String get(String key) throws org.apache.thrift.TException {
-		if(!this.isPrimary) {
-			log.error("Something is wrong - get method shouldnt be called by backup node");
-			throw new org.apache.thrift.TException("Something is wrong - get method shouldnt be called by backup node");
-		}
+//		if(!this.isPrimary) {
+//			log.error("Something is wrong - get method shouldnt be called by backup node");
+//			throw new org.apache.thrift.TException("Something is wrong - get method shouldnt be called by backup node");
+//		}
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire read lock, the thread will be blocked until the lock can be acquired
@@ -78,10 +79,10 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public void put(String key, String value) throws org.apache.thrift.TException {
-		if(!this.isPrimary) {
-			log.error("Something is wrong - put method shouldnt be called by backup node");
-			throw new org.apache.thrift.TException("Something is wrong - put method shouldnt be called by backup node");
-		}
+//		if(!this.isPrimary) {
+//			log.error("Something is wrong - put method shouldnt be called by backup node");
+//			throw new org.apache.thrift.TException("Something is wrong - put method shouldnt be called by backup node");
+//		}
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
@@ -107,28 +108,29 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 	
 	public void syncWithPrimary(String key, String value) throws org.apache.thrift.TException {
-		if(this.isPrimary) {
-			log.error("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
-			throw new org.apache.thrift.TException("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
-		}
-		Semaphore mutex = striped.get(key);
+//		if(this.isPrimary) {
+//			log.error("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
+//			throw new org.apache.thrift.TException("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
+//		}
+//		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
-            mutex.acquire();
+//            mutex.acquire();
 			this.myMap.put(key, value);
 		}catch(Exception e) {
 			log.error("SYNC METHOD ERROR");
 			log.error(e.getMessage());
-		}finally {
-            mutex.release();
 		}
+//        finally {
+//            mutex.release();
+//		}
 	}
 	
 	public void replicateData(Map<String, String> primaryData) throws org.apache.thrift.TException{
-		if(this.isPrimary) {
-			log.error("Something is wrong - replicateData method shouldnt be called by primary node");
-			throw new org.apache.thrift.TException("Something is wrong - replicateData method shouldnt be called by primary node");
-		}
+//		if(this.isPrimary) {
+//			log.error("Something is wrong - replicateData method shouldnt be called by primary node");
+//			throw new org.apache.thrift.TException("Something is wrong - replicateData method shouldnt be called by primary node");
+//		}
 		try {
 			 myMap.putAll(primaryData);
 		}catch(Exception e) {
@@ -202,10 +204,10 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
                 backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
             }
 			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
-            this.isPrimary = this.checkIfPrimary(primarySocket);
+//            this.isPrimary = this.checkIfPrimary(primarySocket);
             
             // if the current node is primary node and there exists backup node, start to prepare backup clients
-            if(this.isPrimary && backupSocket != null){
+            if(this.checkIfPrimary(primarySocket) && backupSocket != null){
                 this.clientPool = populateClientPool(backupSocket);
                 log.info("Done populating client pool, size: " + this.clientPool.size());
                 
@@ -226,7 +228,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
             }
             
             // if the current node is primary node and the backend node is down, purge the backup client queue
-             if(this.isPrimary && backupSocket == null){
+             if(this.checkIfPrimary(primarySocket) && backupSocket == null){
                 this.clientPool = null;
                 log.info("Done populating client pool, size: 0"); 
             }
