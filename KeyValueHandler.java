@@ -53,10 +53,6 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public String get(String key) throws org.apache.thrift.TException {
-//		if(!this.isPrimary) {
-//			log.error("Something is wrong - get method shouldnt be called by backup node");
-//			throw new org.apache.thrift.TException("Something is wrong - get method shouldnt be called by backup node");
-//		}
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire read lock, the thread will be blocked until the lock can be acquired
@@ -79,10 +75,6 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public void put(String key, String value) throws org.apache.thrift.TException {
-//		if(!this.isPrimary) {
-//			log.error("Something is wrong - put method shouldnt be called by backup node");
-//			throw new org.apache.thrift.TException("Something is wrong - put method shouldnt be called by backup node");
-//		}
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
@@ -97,40 +89,30 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
                 }
             
                 myClient.syncWithPrimary(key, value);
-                this.clientPool.add(myClient);
+                try{
+                    this.clientPool.add(myClient);    
+                }catch(java.lang.NullPointerException e){
+                    log.error(e.getMessage());
+                }
             }
 		}catch(Exception e) {
 			log.error("PUT METHOD ERROR");
-			e.printStackTrace();
+			log.error(e.getMessage());
 		}finally {
             mutex.release();
 		}
 	}
 	
 	public void syncWithPrimary(String key, String value) throws org.apache.thrift.TException {
-//		if(this.isPrimary) {
-//			log.error("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
-//			throw new org.apache.thrift.TException("Something is wrong - syncWithPrimary method shouldnt be called by primary node");
-//		}
-//		Semaphore mutex = striped.get(key);
 		try {
-			//acquire write lock, the thread will be blocked until the lock can be acquired
-//            mutex.acquire();
 			this.myMap.put(key, value);
 		}catch(Exception e) {
 			log.error("SYNC METHOD ERROR");
 			log.error(e.getMessage());
 		}
-//        finally {
-//            mutex.release();
-//		}
 	}
 	
 	public void replicateData(Map<String, String> primaryData) throws org.apache.thrift.TException{
-//		if(this.isPrimary) {
-//			log.error("Something is wrong - replicateData method shouldnt be called by primary node");
-//			throw new org.apache.thrift.TException("Something is wrong - replicateData method shouldnt be called by primary node");
-//		}
 		try {
 			 myMap.putAll(primaryData);
 		}catch(Exception e) {
@@ -204,7 +186,6 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
                 backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
             }
 			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
-//            this.isPrimary = this.checkIfPrimary(primarySocket);
             
             // if the current node is primary node and there exists backup node, start to prepare backup clients
             if(this.checkIfPrimary(primarySocket) && backupSocket != null){
@@ -224,7 +205,9 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		        }finally {
 			         readWriteLock.writeLock().unlock();
 		        }
-                this.clientPool.add(myClient);
+                if(myClient != null){
+                    this.clientPool.add(myClient);    
+                }
             }
             
             // if the current node is primary node and the backend node is down, purge the backup client queue
