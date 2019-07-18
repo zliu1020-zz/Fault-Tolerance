@@ -28,6 +28,7 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	private int port;
 	private static Logger log;
     //private boolean isPrimary;
+    private AtomicBoolean hasThreeNode;
 	private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
     private volatile ConcurrentLinkedQueue<KeyValueService.Client> clientPool = new ConcurrentLinkedQueue<KeyValueService.Client>();
     
@@ -38,6 +39,8 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		this.port = port;
 		this.curClient = curClient;
 		this.zkNode = zkNode;
+        this.hasThreeNode = new AtomicBoolean();
+        this.hasThreeNode.set(false);
 		myMap = new ConcurrentHashMap<String, String>();
 		
 		//set up log4j
@@ -53,6 +56,11 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public String get(String key) throws org.apache.thrift.TException {
+        if(this.hasThreeNode.get()){
+            log.error("***THERE EXISTS THREE NODES, REJECT GET REQUEST***");
+            throw new TException("***THERE EXISTS THREE NODES, REJECT GET REQUEST***");
+        }
+        
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire read lock, the thread will be blocked until the lock can be acquired
@@ -75,6 +83,11 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public void put(String key, String value) throws org.apache.thrift.TException {
+        if(this.hasThreeNode.get()){
+            log.error("***THERE EXISTS THREE NODES, REJECT PUT REQUEST***");
+            throw new TException("***THERE EXISTS THREE NODES, REJECT PUT REQUEST***");
+        }
+        
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
@@ -183,20 +196,27 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 			log.info("The number of active child nodes: " + childNodes.size());
 			log.info("The list of active child nodes:" + childNodes.toString());
 			
-			// memorize primary socket (it's the first one in the sorted list)
-			String primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0)));
+            String primarySocket = null;
             String backupSocket = null;
-            if(childNodes.size() > 1){
-                backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
-            }
-			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
-            
+            String brokenSocket = null;
             if(childNodes.size() == 3){
-                log.error("********WE'RE FUCKED***********");
-                log.error("1st = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0))));
-                log.error("2nd = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1))));
-                log.error("3rd = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(2))));
+                this.hasThreeNode.set(true);
+                brokenSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0)));
+                primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));
+                backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(2)));  
+                log.error("******** THREE NODES FOUND ***********");
+                log.error("1st = " + brokenSocket);
+                log.error("2nd = " + primarySocket);
+                log.error("3rd = " + backupSocket);
+            }else{
+                this.hasThreeNode.set(false);
+                primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0)));
+                if(childNodes.size() > 1){
+                    backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
+                }
             }
+			
+			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
             
             // if the current node is primary node and there exists backup node, start to prepare backup clients
             if(this.checkIfPrimary(primarySocket) && backupSocket != null){
