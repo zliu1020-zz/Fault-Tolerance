@@ -104,12 +104,16 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 	
 	public void syncWithPrimary(String key, String value) throws org.apache.thrift.TException {
-		try {
+		Semaphore mutex = striped.get(key);
+        try {
+            mutex.acquire();
 			this.myMap.put(key, value);
 		}catch(Exception e) {
 			log.error("SYNC METHOD ERROR");
 			log.error(e.getMessage());
-		}
+		}finally{
+            mutex.release();
+        }
 	}
 	
 	public void replicateData(Map<String, String> primaryData) throws org.apache.thrift.TException{
@@ -186,6 +190,13 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
                 backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
             }
 			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
+            
+            if(childNodes.size() == 3){
+                log.error("********WE'RE FUCKED***********");
+                log.error("1st = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0))));
+                log.error("2nd = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1))));
+                log.error("3rd = " + new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(2))));
+            }
             
             // if the current node is primary node and there exists backup node, start to prepare backup clients
             if(this.checkIfPrimary(primarySocket) && backupSocket != null){
