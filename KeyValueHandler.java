@@ -27,9 +27,9 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	private String host;
 	private int port;
 	private static Logger log;
-    //private boolean isPrimary;
+    private AtomicBoolean isPrimary;
     private AtomicBoolean hasThreeNode;
-	private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+	private final ReentrantLock lock = new ReentrantLock();
     private volatile ConcurrentLinkedQueue<KeyValueService.Client> clientPool = new ConcurrentLinkedQueue<KeyValueService.Client>();
     
     private Striped<Semaphore> striped = Striped.semaphore(64,1);
@@ -40,8 +40,8 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 		this.curClient = curClient;
 		this.zkNode = zkNode;
         this.hasThreeNode = new AtomicBoolean();
-        this.hasThreeNode.set(false);
-		myMap = new ConcurrentHashMap<String, String>();
+        this.isPrimary = new AtomicBoolean();
+		this.myMap = new ConcurrentHashMap<String, String>();
 		
 		//set up log4j
 		BasicConfigurator.configure();
@@ -56,9 +56,9 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public String get(String key) throws org.apache.thrift.TException {
-        if(this.hasThreeNode.get()){
-            log.error("***THERE EXISTS THREE NODES, REJECT GET REQUEST***");
-            throw new TException("***THERE EXISTS THREE NODES, REJECT GET REQUEST***");
+        if(!this.isPrimary.get() && this.hasThreeNode.get()){
+            log.error("***THERE EXISTS THREE NODES, REJECT GET REQUEST FROM BACKUP NODE**");
+            throw new TException("***THERE EXISTS THREE NODES, REJECT GET REQUEST FROM BACKUP NODE***");
         }
         
 		Semaphore mutex = striped.get(key);
@@ -83,18 +83,23 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 
 	public void put(String key, String value) throws org.apache.thrift.TException {
-        if(this.hasThreeNode.get()){
-            log.error("***THERE EXISTS THREE NODES, REJECT PUT REQUEST***");
-            throw new TException("***THERE EXISTS THREE NODES, REJECT PUT REQUEST***");
+        if(!this.isPrimary.get() && this.hasThreeNode.get()){
+            log.error("***THERE EXISTS THREE NODES, REJECT PUT REQUEST FROM BACKUP NODE***");
+            throw new TException("***THERE EXISTS THREE NODES, REJECT PUT REQUEST FROM BACKUP NODE***");
         }
         
 		Semaphore mutex = striped.get(key);
 		try {
 			//acquire write lock, the thread will be blocked until the lock can be acquired
             mutex.acquire();
-			this.myMap.put(key, value);
+            boolean isLocked = true;
+            while(isLocked){
+                isLocked = this.lock.isLocked();
+            }
+            
+            this.myMap.put(key, value);
           
-            if(this.clientPool != null){
+            if(this.isPrimary.get() && this.clientPool != null){
                 //start to update MyMap for backup node
 			    KeyValueService.Client myClient = null;
                 while(myClient == null){
@@ -117,21 +122,22 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
 	}
 	
 	public void syncWithPrimary(String key, String value) throws org.apache.thrift.TException {
-		Semaphore mutex = striped.get(key);
+		//Semaphore mutex = striped.get(key);
         try {
-            mutex.acquire();
+          //  mutex.acquire();
 			this.myMap.put(key, value);
 		}catch(Exception e) {
 			log.error("SYNC METHOD ERROR");
 			log.error(e.getMessage());
-		}finally{
-            mutex.release();
-        }
+		}
+        //finally{
+        //    mutex.release();
+        //}
 	}
 	
 	public void replicateData(Map<String, String> primaryData) throws org.apache.thrift.TException{
 		try {
-			 myMap.putAll(primaryData);
+			 myMap = new ConcurrentHashMap<String,String>(primaryData);
 		}catch(Exception e) {
 			log.error("Failed to replicate data from primary node to backup node:" + this.host + ":" + this.port);
 			log.error(e.getMessage());
@@ -199,15 +205,12 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
             String primarySocket = null;
             String backupSocket = null;
             String brokenSocket = null;
-            if(childNodes.size() == 3){
+            if(childNodes.size() > 2){
                 this.hasThreeNode.set(true);
-                brokenSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0)));
-                primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));
-                backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(2)));  
+               
+                primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(childNodes.size()-2)));
+                backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(childNodes.size()-1)));  
                 log.error("******** THREE NODES FOUND ***********");
-                log.error("1st = " + brokenSocket);
-                log.error("2nd = " + primarySocket);
-                log.error("3rd = " + backupSocket);
             }else{
                 this.hasThreeNode.set(false);
                 primarySocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(0)));
@@ -215,37 +218,45 @@ public class KeyValueHandler implements KeyValueService.Iface, CuratorWatcher{
                     backupSocket = new String(this.curClient.getData().forPath(this.zkNode + "/" + childNodes.get(1)));    
                 }
             }
+            
+            this.isPrimary.set(this.checkIfPrimary(primarySocket));
 			
 			log.info("Current node is" + this.host + ":" + this.port + ". isPrimary: " + this.checkIfPrimary(primarySocket));
             
             // if the current node is primary node and there exists backup node, start to prepare backup clients
             if(this.checkIfPrimary(primarySocket) && backupSocket != null){
-                this.clientPool = populateClientPool(backupSocket);
-                log.info("Done populating client pool, size: " + this.clientPool.size());
-                
-                KeyValueService.Client myClient = null;
-                while(myClient == null){
-                    myClient = this.clientPool.poll();
-                }
+                String backupHost = backupSocket.split(":")[0];
+                int backupPort = Integer.parseInt(backupSocket.split(":")[1]);
+                TSocket tSocket = new TSocket(backupHost, backupPort);
+	            TTransport tTransport = new TFramedTransport(tSocket);
+                tTransport.open();
+	            TProtocol tProtocol = new TBinaryProtocol(tTransport);
+	            
+	            // retrieve backup client
+	            KeyValueService.Client myClient = new KeyValueService.Client(tProtocol);
                 try {
-			         readWriteLock.writeLock().lock();
+			         lock.lock();
 			         myClient.replicateData(this.myMap);
+                     this.clientPool = populateClientPool(backupSocket);
+                     log.info("Done populating client pool, size: " + this.clientPool.size());
 		        }catch(Exception e) {
 			         log.error("Failed to replicate data from primary node to backup node:" + this.host + ":" + this.port);
 			         log.error(e.getMessage());
 		        }finally {
-			         readWriteLock.writeLock().unlock();
-		        }
-                if(myClient != null){
-                    this.clientPool.add(myClient);    
-                }
-            }
-            
-            // if the current node is primary node and the backend node is down, purge the backup client queue
-             if(this.checkIfPrimary(primarySocket) && backupSocket == null){
+			         lock.unlock();
+                     log.info("Done replicating data from primary to backup");
+		        }    
+                
+            }else{
                 this.clientPool = null;
                 log.info("Done populating client pool, size: 0"); 
             }
+            
+            // if the current node is primary node and the backend node is down, purge the backup client queue
+//             if(this.checkIfPrimary(primarySocket) && backupSocket == null){
+//                this.clientPool = null;
+//                log.info("Done populating client pool, size: 0"); 
+//            }
 		}catch(InterruptedException e) {
 			log.error(e.getMessage());
 		}catch(Exception e) {
